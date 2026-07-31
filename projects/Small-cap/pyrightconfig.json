@@ -1,0 +1,11 @@
+{
+  "pythonVersion": "3.11",
+  "pythonPlatform": "Windows",
+  "extraPaths": [
+    "C:\\Users\\Administrator\\AppData\\Local\\Python\\pythoncore-3.11-64\\Lib\\site-packages"
+  ],
+  "reportMissingImports": "none",
+  "reportMissingModuleSource": "none",
+  "reportWildcardImportFromLibrary": "none",
+  "reportUndefinedVariable": "none"
+}
