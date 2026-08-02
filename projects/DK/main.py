@@ -28,7 +28,8 @@ DK 指标原理（社区逆向拟合的通行近似版）：
        MDK = SMA(DK,  M, 1)
 3. 状态机翻转 + 阈值过滤，保证买卖点交替出现（不连续买 / 连续卖）：
    - 当前为空头，且 DK 于低位（DK < LOW_TH）上穿 MDK  -> D 买点，切多头，95% 建仓
-   - 当前为多头，且 DK 于高位（DK > HIGH_TH）下穿 MDK -> K 卖点，切空头，清仓
+   - 当前为多头，且 DK 先冲上 ARM_LEVEL 后回落跌破 EXIT_LEVEL -> K 卖点，切空头，清仓
+     （追踪出场，避免强趋势中 DK 长期钉在高位反复金叉死叉导致过早离场）
 
 A股及ETF不做空，因此策略只持有多仓或空仓。
 '''
@@ -42,7 +43,11 @@ def init(context):
     context.n_period = 34        # 区间回看周期 N
     context.smooth_period = 5    # SMA 平滑周期 M
     context.low_threshold = 25   # 低位阈值：DK 低于此值的金叉才视为买点
-    context.high_threshold = 75  # 高位阈值：DK 高于此值的死叉才视为卖点
+    # 追踪出场参数：持仓期间 DK 需先冲上 arm_level（武装），
+    # 随后回落跌破 exit_level 才触发 K 卖点。
+    # 避免强趋势中 DK 长期钉在高位反复金叉死叉导致过早离场。
+    context.arm_level = 80       # 高位武装阈值
+    context.exit_level = 50      # 回落出场阈值
 
     context.target_percent = 0.95
 
@@ -57,6 +62,8 @@ def init(context):
     context.prev_diff = None
     # 多空状态：True=多头（已持仓），False=空头（空仓）
     context.is_long = False
+    # 追踪出场武装标志：持仓期间 DK 是否已冲上 arm_level
+    context.armed = False
 
     context.market_data_connected = True
     context.last_market_error_time = None
@@ -125,7 +132,6 @@ def on_bar(context, bars):
         return
 
     golden_cross = prev_diff <= 0 and diff > 0   # DK 上穿 MDK
-    death_cross = prev_diff >= 0 and diff < 0     # DK 下穿 MDK
 
     # 与实际持仓核对，避免状态与持仓不一致
     positions = get_position() or []
@@ -150,6 +156,7 @@ def on_bar(context, bars):
             order_type=OrderType_Market,
         )
         context.is_long = True
+        context.armed = False
         print(
             '{}：{} DK买点(D)，DK={:.2f} MDK={:.2f} 低位金叉，目标仓位{:.0%}'.format(
                 context.now, symbol, dk, mdk, context.target_percent,
@@ -157,25 +164,26 @@ def on_bar(context, bars):
         )
         return
 
-    # K 卖点：多头状态 + 高位死叉
-    if (
-        context.is_long
-        and death_cross
-        and dk > context.high_threshold
-    ):
-        if has_long_position:
-            order_target_percent(
-                symbol=symbol,
-                percent=0,
-                position_side=PositionSide_Long,
-                order_type=OrderType_Market,
-            )
-            print(
-                '{}：{} DK卖点(K)，DK={:.2f} MDK={:.2f} 高位死叉，清空持仓'.format(
-                    context.now, symbol, dk, mdk,
+    # K 卖点：多头状态 + 追踪出场（DK 曾冲上 arm_level 后回落跌破 exit_level）
+    if context.is_long:
+        if dk > context.arm_level:
+            context.armed = True
+
+        if context.armed and dk < context.exit_level:
+            if has_long_position:
+                order_target_percent(
+                    symbol=symbol,
+                    percent=0,
+                    position_side=PositionSide_Long,
+                    order_type=OrderType_Market,
                 )
-            )
-        context.is_long = False
+                print(
+                    '{}：{} DK卖点(K)，DK={:.2f} MDK={:.2f} 高位回落，清空持仓'.format(
+                        context.now, symbol, dk, mdk,
+                    )
+                )
+            context.is_long = False
+            context.armed = False
 
 
 def on_order_status(context, order):
@@ -253,9 +261,9 @@ def on_backtest_finished(context, indicator):
     # 基本信息
     print('标的            ：{}'.format(context.symbol))
     print('周期            ：{}'.format(context.frequency))
-    print('DK 参数         ：N={} M={} 低位阈值={} 高位阈值={}'.format(
+    print('DK 参数         ：N={} M={} 买入阈值={} 武装={} 出场={}'.format(
         context.n_period, context.smooth_period,
-        context.low_threshold, context.high_threshold,
+        context.low_threshold, context.arm_level, context.exit_level,
     ))
     print('回测区间        ：{} ~ {}'.format(
         getattr(context, 'backtest_start_time', '-'),
